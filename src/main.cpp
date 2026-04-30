@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-// ====== PINES MOTORES ======
+// PINES MOTORES
 const int IN1 = 12;
 const int IN2 = 14;
 const int IN3 = 26;
@@ -8,33 +8,32 @@ const int IN4 = 27;
 const int ENA = 25;
 const int ENB = 33;
 
-// ====== PWM ======
+// PWM 
 const int freq       = 1000;
 const int resolution = 8;
 const int canalDer   = 0;
 const int canalIzq   = 1;
 
-// ====== ENCODERS ======
+// ENCODERS 
 const int encoderR = 13;
 const int encoderL = 35;
 const int PPR      = 20;
 
-const unsigned long DEBOUNCE_US = 20000;
+const unsigned long DEBOUNCE_US = 10000;
 
-// ====== VARIABLES ISR — solo enteros ======
+// VARIABLES ISR — solo enteros
 volatile unsigned long lastTimeR  = 0;
 volatile unsigned long lastTimeL  = 0;
-volatile unsigned long gapR       = 0; // µs entre últimos dos pulsos
+volatile unsigned long gapR       = 0; 
 volatile unsigned long gapL       = 0;
 volatile long          countR     = 0;
 volatile long          countL     = 0;
 
-// ====== ISR — sin float, sin división ======
 void IRAM_ATTR isrR() {
   unsigned long now = micros();
   unsigned long g   = now - lastTimeR;
   if (g > DEBOUNCE_US) {
-    gapR      = g;   // solo guarda el intervalo
+    gapR      = g;   
     countR++;
     lastTimeR = now;
   }
@@ -50,7 +49,7 @@ void IRAM_ATTR isrL() {
   }
 }
 
-// ====== MOTORES ======
+// MOTORES
 void motorR(bool adelante, int pwm) {
   pwm = constrain(pwm, 0, 255);
   digitalWrite(IN1, adelante ? HIGH : LOW);
@@ -65,7 +64,7 @@ void motorL(bool adelante, int pwm) {
   ledcWrite(canalIzq, pwm);
 }
 
-// ====== SETUP ======
+// SETUP
 void setup() {
   Serial.begin(115200);
 
@@ -91,7 +90,7 @@ void loop() {
   static long lastR = 0, lastL = 0;
   unsigned long now = millis();
 
-  if (now - lastPrint >= 500) { // Muestreo cada 500ms es más estable
+  if (now - lastPrint >= 500) { 
     long r, l;
     noInterrupts();
     r = countR;
@@ -100,11 +99,11 @@ void loop() {
 
     float dt = (now - lastPrint) / 1000.0;
     
-    // Calculamos pulsos por segundo
+    // Se calcula  pulsos por segundo
     float ppsR = (r - lastR) / dt;
     float ppsL = (l - lastL) / dt;
 
-    // Convertimos a Rad/s: (Pulsos_seg / PPR) * 2 * PI
+    // Se convierte a Rad/s: (Pulsos_seg / PPR) * 2 * PI
     float wR = (ppsR / (float)PPR) * 2.0 * PI;
     float wL = (ppsL / (float)PPR) * 2.0 * PI;
 
