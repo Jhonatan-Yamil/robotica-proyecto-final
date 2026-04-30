@@ -19,7 +19,7 @@ const int encoderR = 13;
 const int encoderL = 35;
 const int PPR      = 20;
 
-const unsigned long DEBOUNCE_US = 10000;
+const unsigned long DEBOUNCE_US = 15000;
 
 // VARIABLES ISR — solo enteros
 volatile unsigned long lastTimeR  = 0;
@@ -84,7 +84,7 @@ void setup() {
 }
 void loop() {
   motorR(true, 150);
-  motorL(true, 0);
+  motorL(true, 150);
 
   static unsigned long lastPrint = 0;
   static long lastR = 0, lastL = 0;
