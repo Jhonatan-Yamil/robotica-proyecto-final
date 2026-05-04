@@ -1,39 +1,41 @@
 #include <Arduino.h>
 
-// PINES MOTORES
-const int IN1 = 12;
+// ====== PINES MOTORES ======
+const int IN1 = 12; // Motor Derecho
 const int IN2 = 14;
-const int IN3 = 26;
+const int IN3 = 26; // Motor Izquierdo
 const int IN4 = 27;
-const int ENA = 25;
-const int ENB = 33;
+const int ENA = 25; // PWM Derecho
+const int ENB = 33; // PWM Izquierdo
 
-// PWM 
+// ====== CONFIGURACIÓN PWM ======
 const int freq       = 1000;
 const int resolution = 8;
 const int canalDer   = 0;
 const int canalIzq   = 1;
 
-// ENCODERS 
-const int encoderR = 13;
-const int encoderL = 35;
-const int PPR      = 20;
+// ====== CONFIGURACIÓN ENCODERS ======
+const int encoderR = 13; 
+const int encoderL = 35; 
+const int PPR      = 20; 
+const unsigned long DEBOUNCE_US = 6000; // Ajustado para captar pulsos rápidos
 
-const unsigned long DEBOUNCE_US = 15000;
+// ====== VARIABLES DE ESTADO (ISR) ======
+volatile long countR = 0;
+volatile long countL = 0;
+volatile unsigned long lastTimeR = 0;
+volatile unsigned long lastTimeL = 0;
 
-// VARIABLES ISR — solo enteros
-volatile unsigned long lastTimeR  = 0;
-volatile unsigned long lastTimeL  = 0;
-volatile unsigned long gapR       = 0; 
-volatile unsigned long gapL       = 0;
-volatile long          countR     = 0;
-volatile long          countL     = 0;
+// ====== VARIABLES DE CONTROL ======
+float setpointW = 12.0; // Radianes por segundo objetivo
+float Kp = 0.6;         // Ganancia proporcional (reducida para evitar oscilaciones)
+float pwmR = 75.0;      // Pre-carga inicial
+float pwmL = 75.0;      // Pre-carga inicial
 
+// ====== INTERRUPCIONES ======
 void IRAM_ATTR isrR() {
   unsigned long now = micros();
-  unsigned long g   = now - lastTimeR;
-  if (g > DEBOUNCE_US) {
-    gapR      = g;   
+  if (now - lastTimeR > DEBOUNCE_US) {
     countR++;
     lastTimeR = now;
   }
@@ -41,30 +43,27 @@ void IRAM_ATTR isrR() {
 
 void IRAM_ATTR isrL() {
   unsigned long now = micros();
-  unsigned long g   = now - lastTimeL;
-  if (g > DEBOUNCE_US) {
-    gapL      = g;
+  if (now - lastTimeL > DEBOUNCE_US) {
     countL++;
     lastTimeL = now;
   }
 }
 
-// MOTORES
-void motorR(bool adelante, int pwm) {
-  pwm = constrain(pwm, 0, 255);
-  digitalWrite(IN1, adelante ? HIGH : LOW);
-  digitalWrite(IN2, adelante ? LOW  : HIGH);
-  ledcWrite(canalDer, pwm);
+// ====== FUNCIÓN DE CONTROL DE MOTORES ======
+void aplicarMotores(int pR, int pL) {
+  // Garantizar que el PWM físico nunca sea ilegal
+  pR = constrain(pR, 0, 255);
+  pL = constrain(pL, 0, 255);
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  ledcWrite(canalDer, pR);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  ledcWrite(canalIzq, pL);
 }
 
-void motorL(bool adelante, int pwm) {
-  pwm = constrain(pwm, 0, 255);
-  digitalWrite(IN3, adelante ? HIGH : LOW);
-  digitalWrite(IN4, adelante ? LOW  : HIGH);
-  ledcWrite(canalIzq, pwm);
-}
-
-// SETUP
 void setup() {
   Serial.begin(115200);
 
@@ -78,40 +77,57 @@ void setup() {
 
   pinMode(encoderR, INPUT_PULLUP);
   pinMode(encoderL, INPUT_PULLUP);
-
   attachInterrupt(digitalPinToInterrupt(encoderR), isrR, FALLING);
   attachInterrupt(digitalPinToInterrupt(encoderL), isrL, FALLING);
-}
-void loop() {
-  motorR(true, 150);
-  motorL(true, 150);
 
-  static unsigned long lastPrint = 0;
-  static long lastR = 0, lastL = 0;
+  Serial.println("--- Sistema de Control Reiniciado (Anti-Saturación) ---");
+  delay(1000);
+}
+
+void loop() {
+  static unsigned long lastControl = 0;
+  static long lastCountR = 0;
+  static long lastCountL = 0;
   unsigned long now = millis();
 
-  if (now - lastPrint >= 500) { 
-    long r, l;
+  // Ciclo de control cada 50ms
+  if (now - lastControl >= 50) {
+    long currentR, currentL;
+
+    // Captura segura de contadores
     noInterrupts();
-    r = countR;
-    l = countL;
+    currentR = countR;
+    currentL = countL;
     interrupts();
 
-    float dt = (now - lastPrint) / 1000.0;
-    
-    // Se calcula  pulsos por segundo
-    float ppsR = (r - lastR) / dt;
-    float ppsL = (l - lastL) / dt;
+    float dt = (now - lastControl) / 1000.0;
 
-    // Se convierte a Rad/s: (Pulsos_seg / PPR) * 2 * PI
-    float wR = (ppsR / (float)PPR) * 2.0 * PI;
-    float wL = (ppsL / (float)PPR) * 2.0 * PI;
+    // Cálculo de velocidades reales
+    float wR = ((currentR - lastCountR) / (float)PPR / dt) * 2.0 * PI;
+    float wL = ((currentL - lastCountL) / (float)PPR / dt) * 2.0 * PI;
 
-    Serial.print("Rad/s -> R: "); Serial.print(wR);
-    Serial.print(" | L: "); Serial.println(wL);
+    // Actualización de PWM con Lazo Cerrado
+    pwmR += (setpointW - wR) * Kp;
+    pwmL += (setpointW - wL) * Kp;
 
-    lastR = r;
-    lastL = l;
-    lastPrint = now;
+    // --- BLOQUE ANTI-SATURACIÓN (Indispensable) ---
+    // Esto evita que las variables suban a 5000 como te pasó antes
+    pwmR = constrain(pwmR, 0, 255);
+    pwmL = constrain(pwmL, 0, 255);
+
+    // Enviar señal a los motores
+    aplicarMotores((int)pwmR, (int)pwmL);
+
+    // Monitor Serial para depuración
+    Serial.print("Target:"); Serial.print(setpointW, 1);
+    Serial.print(" | wR:"); Serial.print(wR, 2);
+    Serial.print(" | wL:"); Serial.print(wL, 2);
+    Serial.print(" | PWM_R:"); Serial.print((int)pwmR);
+    Serial.print(" | PWM_L:"); Serial.println((int)pwmL);
+
+    // Guardar historial
+    lastCountR = currentR;
+    lastCountL = currentL;
+    lastControl = now;
   }
 }
