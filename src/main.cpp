@@ -1,14 +1,18 @@
 #include <Arduino.h>
-#include "BluetoothSerial.h"
+// #include "BluetoothSerial.h"
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <WiFi.h>
 
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth no habilitado
-#endif
+WiFiServer server(1234);
+WiFiClient client;
 
-BluetoothSerial SerialBT;
+// #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+// #error Bluetooth no habilitado
+// #endif
+
+// BluetoothSerial SerialBT;
 Adafruit_MPU6050 mpu;
 TaskHandle_t TareaTelemetria;
 
@@ -86,7 +90,7 @@ float KpL = 0.3; float KiL = 1.2; float KdL = -0.1;
 float integralR = 0; float integralL = 0;
 float prev_wRe = 0; float prev_wLe = 0;
 const float integralMax = 80;     // Reducido para evitar que el robot "patine"
-const float DIST_TOLERANCE = 2.5; // Detenerse a 2.5cm
+const float DIST_TOLERANCE = 1.5; // Detenerse a 2.5cm
 const float DECEL_DIST = 25.0;    // Empezar a frenar a los 25cm
 // ============================================================
 // INTERRUPCIONES
@@ -127,56 +131,235 @@ void motorL(bool adelante, int pwm) {
 // ============================================================
 // COMANDOS BLUETOOTH
 // ============================================================
-void leerComandos() {
-    if (!SerialBT.available()) return;
-    String comando = SerialBT.readStringUntil('\n'); comando.trim();
-    if (comando.length() < 2) return;
+// void leerComandos() {
+//     if (!SerialBT.available()) return;
+//     String comando = SerialBT.readStringUntil('\n'); comando.trim();
+//     if (comando.length() < 2) return;
 
-    String tipo = comando.substring(0, 2);
-    float valor = comando.substring(2).toFloat();
+//     String tipo = comando.substring(0, 2);
+//     float valor = comando.substring(2).toFloat();
 
-    if (tipo == "GO") {
-        if (valor > 0.5) {
-            SerialBT.println("Iniciando en 3 segundos...");
-            delay(3000);
-            x_pos = 0; y_pos = 0; theta = PI / 2.0;
-            integralR = 0; integralL = 0; prev_wRe = 0; prev_wLe = 0;
-            sistemaActivo = true;
-        } else {
-            sistemaActivo = false;
-            motorR(true, 0); motorL(true, 0);
-            SerialBT.println("Sistema detenido");
-        }
-    }
-    // Coordenadas
-    else if (tipo == "TX") { targetX = valor; SerialBT.println("Target X: " + String(targetX)); }
-    else if (tipo == "TY") { targetY = valor; SerialBT.println("Target Y: " + String(targetY)); }
+//     if (tipo == "GO") {
+//         if (valor > 0.5) {
+//             SerialBT.println("Iniciando en 3 segundos...");
+//             delay(3000);
+//             x_pos = 0; y_pos = 0; theta = PI / 2.0;
+//             integralR = 0; integralL = 0; prev_wRe = 0; prev_wLe = 0;
+//             sistemaActivo = true;
+//         } else {
+//             sistemaActivo = false;
+//             motorR(true, 0); motorL(true, 0);
+//             SerialBT.println("Sistema detenido");
+//         }
+//     }
+//     // Coordenadas
+//     else if (tipo == "TX") { targetX = valor; SerialBT.println("Target X: " + String(targetX)); }
+//     else if (tipo == "TY") { targetY = valor; SerialBT.println("Target Y: " + String(targetY)); }
     
-    // Navegación
-    else if (tipo == "KV") { Kv = valor; SerialBT.println("Kv: " + String(Kv)); }
-    else if (tipo == "KW") { Kw = valor; SerialBT.println("Kw: " + String(Kw)); }
-    else if (tipo == "VM") { V_MAX = valor; SerialBT.println("V_MAX: " + String(V_MAX)); }
-    else if (tipo == "WM") { W_MAX = valor; SerialBT.println("W_MAX: " + String(W_MAX)); }
+//     // Navegación
+//     else if (tipo == "KV") { Kv = valor; SerialBT.println("Kv: " + String(Kv)); }
+//     else if (tipo == "KW") { Kw = valor; SerialBT.println("Kw: " + String(Kw)); }
+//     else if (tipo == "VM") { V_MAX = valor; SerialBT.println("V_MAX: " + String(V_MAX)); }
+//     else if (tipo == "WM") { W_MAX = valor; SerialBT.println("W_MAX: " + String(W_MAX)); }
     
-    // Offsets y PID
-    else if (tipo == "OR") { offsetR = (int)valor; SerialBT.println("Offset R: " + String(offsetR)); }
-    else if (tipo == "OL") { offsetL = (int)valor; SerialBT.println("Offset L: " + String(offsetL)); }
-    else if (tipo == "PR") KpR = valor; else if (tipo == "PL") KpL = valor;
-    else if (tipo == "IR") KiR = valor; else if (tipo == "IL") KiL = valor;
-    else if (tipo == "DR") KdR = valor; else if (tipo == "DL") KdL = valor;
-}
+//     // Offsets y PID
+//     else if (tipo == "OR") { offsetR = (int)valor; SerialBT.println("Offset R: " + String(offsetR)); }
+//     else if (tipo == "OL") { offsetL = (int)valor; SerialBT.println("Offset L: " + String(offsetL)); }
+//     else if (tipo == "PR") KpR = valor; else if (tipo == "PL") KpL = valor;
+//     else if (tipo == "IR") KiR = valor; else if (tipo == "IL") KiL = valor;
+//     else if (tipo == "DR") KdR = valor; else if (tipo == "DL") KdL = valor;
+// }
 
 // ============================================================
 // TAREA BT
 // ============================================================
 void tareaBT(void *pvParameters) {
     for (;;) {
-        if (hayNuevosDatos) {
-            SerialBT.printf("wRref:%.2f,wR:%.2f,X:%.2f,MetaX:%.2f,Y:%.2f,MetaY:%.2f\n",
-                env_wRref, env_wR, env_x, targetX, env_y, targetY);
-            hayNuevosDatos = false;
+        // =====================================
+        // RECIBIR COMANDOS WIFI
+        // =====================================
+        if (client && client.connected() && client.available()) {
+
+            String cmd = client.readStringUntil('\n');
+            cmd.trim();
+
+            Serial.println(cmd);
+
+            // START
+            if (cmd == "START") {
+
+                x_pos = 0;
+                y_pos = 0;
+                theta = PI / 2.0;
+
+                integralR = 0;
+                integralL = 0;
+
+                prev_wRe = 0;
+                prev_wLe = 0;
+
+                sistemaActivo = true;
+            }
+
+            // STOP
+            else if (cmd == "STOP") {
+
+                sistemaActivo = false;
+
+                motorR(true, 0);
+                motorL(true, 0);
+            }
+
+            // TARGET X
+            else if (cmd.startsWith("TX:")) {
+                targetX = cmd.substring(3).toFloat();
+            }
+
+            // TARGET Y
+            else if (cmd.startsWith("TY:")) {
+                targetY = cmd.substring(3).toFloat();
+            }
+
+            // Kv
+            else if (cmd.startsWith("KV:")) {
+                Kv = cmd.substring(3).toFloat();
+            }
+
+            // Kw
+            else if (cmd.startsWith("KW:")) {
+                Kw = cmd.substring(3).toFloat();
+            }
+
+            // V_MAX
+            else if (cmd.startsWith("VM:")) {
+                V_MAX = cmd.substring(3).toFloat();
+            }
+
+            // W_MAX
+            else if (cmd.startsWith("WM:")) {
+                W_MAX = cmd.substring(3).toFloat();
+            }
+
+            // OFFSET R
+            else if (cmd.startsWith("OR:")) {
+                offsetR = cmd.substring(3).toInt();
+            }
+
+            // OFFSET L
+            else if (cmd.startsWith("OL:")) {
+                offsetL = cmd.substring(3).toInt();
+            }
         }
-        vTaskDelay(20 / portTICK_PERIOD_MS);
+        // =====================================================
+        // RECIBIR COMANDOS DESDE SERIAL STUDIO
+        // =====================================================
+        // if (SerialBT.available()) {
+
+        //     String cmd = SerialBT.readStringUntil('\n');
+        //     cmd.trim();
+
+        //     // START
+        //     if (cmd == "START") {
+        //         x_pos = 0;
+        //         y_pos = 0;
+        //         theta = PI / 2.0;
+
+        //         integralR = 0;
+        //         integralL = 0;
+
+        //         prev_wRe = 0;
+        //         prev_wLe = 0;
+
+        //         sistemaActivo = true;
+
+        //         SerialBT.println("{\"status\":\"START\"}");
+        //     }
+
+        //     // STOP
+        //     else if (cmd == "STOP") {
+
+        //         sistemaActivo = false;
+
+        //         motorR(true, 0);
+        //         motorL(true, 0);
+
+        //         SerialBT.println("{\"status\":\"STOP\"}");
+        //     }
+
+        //     // KV
+        //     else if (cmd.startsWith("KV:")) {
+        //         Kv = cmd.substring(3).toFloat();
+        //     }
+
+        //     // KW
+        //     else if (cmd.startsWith("KW:")) {
+        //         Kw = cmd.substring(3).toFloat();
+        //     }
+
+        //     // VM
+        //     else if (cmd.startsWith("VM:")) {
+        //         V_MAX = cmd.substring(3).toFloat();
+        //     }
+
+        //     // WM
+        //     else if (cmd.startsWith("WM:")) {
+        //         W_MAX = cmd.substring(3).toFloat();
+        //     }
+
+        //     // TX
+        //     else if (cmd.startsWith("TX:")) {
+        //         targetX = cmd.substring(3).toFloat();
+        //     }
+
+        //     // TY
+        //     else if (cmd.startsWith("TY:")) {
+        //         targetY = cmd.substring(3).toFloat();
+        //     }
+        // }
+
+        // =====================================================
+        // ENVIAR TELEMETRÍA JSON
+        // =====================================================
+        // =====================================
+        // CONEXIÓN CLIENTE WIFI
+        // =====================================
+        if (!client || !client.connected()) {
+            client = server.available();
+        }
+
+        // =====================================
+        // ENVIAR TELEMETRÍA
+        // =====================================
+        if (client && client.connected()) {
+
+            client.printf(
+                "{\"x\":%.2f,"
+                "\"y\":%.2f,"
+                "\"theta\":%.2f,"
+                "\"wr\":%.2f,"
+                "\"wrref\":%.2f,"
+                "\"kv\":%.2f,"
+                "\"kw\":%.2f,"
+                "\"vm\":%.2f,"
+                "\"wm\":%.2f,"
+                "\"tx\":%.2f,"
+                "\"ty\":%.2f}\n",
+
+                x_pos,
+                y_pos,
+                theta,
+                env_wR,
+                env_wRref,
+                Kv,
+                Kw,
+                V_MAX,
+                W_MAX,
+                targetX,
+                targetY
+            );
+        }
+
+        vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
 
@@ -185,7 +368,7 @@ void tareaBT(void *pvParameters) {
 // ============================================================
 void setup() {
     Serial.begin(115200);
-    SerialBT.begin("Auto_ESP32");
+    // SerialBT.begin("Auto_ESP32");
     Wire.begin(18, 19);
 
     if (!mpu.begin()) {
@@ -202,7 +385,7 @@ void setup() {
         mpu.getEvent(&a, &g, &temp);
         
         // 🔴 EJE CORREGIDO PARA CALIBRACIÓN
-        suma += g.gyro.x; 
+        suma += g.gyro.z; 
         
         delay(3);
     }
@@ -218,16 +401,27 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(encoderL), isrL, RISING);
 
     xTaskCreatePinnedToCore(tareaBT, "TareaBT", 4096, NULL, 1, &TareaTelemetria, 0);
+    const char* ssid = "RobotESP32";
+    const char* password = "12345678";
+
+    WiFi.softAP(ssid, password);
+    server.begin();
     
+    Serial.println("Servidor TCP iniciado");
+    Serial.println("Servidor listo");
+
+    IPAddress IP = WiFi.softAPIP();
+
+    Serial.println(IP);
     Serial.println("Listo");
-    SerialBT.println("Listo");
+    // SerialBT.println("Listo");
 }
 
 // ============================================================
 // LOOP
 // ============================================================
 void loop() {
-    leerComandos();
+    // leerComandos();
 
     static long lastCountR = 0;
     static long lastCountL = 0;
@@ -257,8 +451,8 @@ void loop() {
         mpu.getEvent(&a, &g, &temp);
 
         // 🔴 EJE CORREGIDO (Izquierda = Positivo)
-        float w_gyro = g.gyro.x - gyro_offset;
-
+        float w_gyro = g.gyro.z - gyro_offset;
+        // float w_gyro = 0;
         // Banda Muerta (Deadband)
         if (abs(w_gyro) < 0.03) {
             w_gyro = 0.0;
@@ -298,7 +492,7 @@ void loop() {
             } else {
                 // FRENADO PROPORCIONAL: reduce velocidad al acercarse a la meta
                 float v_frenado = (dist < DECEL_DIST) ? (Kv * dist) : V_MAX;
-                v_deseada = constrain(v_frenado, 1.2, V_MAX); // 1.2 es el mínimo para no quedarse trabado
+                v_deseada = constrain(v_frenado, 0.8, V_MAX); // 1.2 es el mínimo para no quedarse trabado
                 w_deseada = Kw * errorTheta;
             }
 
@@ -312,7 +506,7 @@ void loop() {
             integralR = 0; integralL = 0;
             prev_wRe = 0; prev_wLe = 0;
             motorR(true, 0); motorL(true, 0);
-            SerialBT.println(">> META ALCANZADA");
+            // SerialBT.println(">> META ALCANZADA");
         }
 
         // Cinemática Inversa
