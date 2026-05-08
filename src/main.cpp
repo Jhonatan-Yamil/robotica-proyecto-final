@@ -28,7 +28,7 @@ const float L = 14.0;     // distancia entre ruedas [cm]
 bool sistemaActivo = false;
 
 float targetX = 0.0;
-float targetY = 100.0;
+float targetY = 25.0;
 
 float x_pos = 0.0;
 float y_pos = 0.0;
@@ -40,9 +40,9 @@ float wLref = 0.0;
 float gyro_offset = 0.0;
 
 // 🔴 TUS NUEVOS PARÁMETROS
-float Kv = 0.4; 
-float Kw = 0.6;  // Ligeramente aumentado para correcciones más rápidas
-float V_MAX = 1.5; 
+float Kv = 0.30; 
+float Kw = 0.10;
+float V_MAX = 1.5;
 float W_MAX = 1.5;
 
 // ============================================================
@@ -52,6 +52,11 @@ volatile float env_wRref = 0;
 volatile float env_wR = 0;
 volatile float env_x = 0;
 volatile float env_y = 0;
+volatile float env_wL = 0;
+volatile float env_wLref = 0;
+volatile float env_dist = 0;
+volatile float env_errTheta = 0;
+volatile float env_wGyro = 0;
 
 volatile bool hayNuevosDatos = false;
 
@@ -68,8 +73,8 @@ const int freq = 1000; const int resolution = 8;
 int dirR = 1; int dirL = 1;
 
 // 🔴 OFFSETS DINÁMICOS (Si necesitas 90, puedes cambiarlo aquí o enviar OR90 / OL90)
-int offsetR = 90;
-int offsetL = 90;
+int offsetR = 85;
+int offsetL = 100;
 
 // ============================================================
 // ENCODERS
@@ -79,19 +84,19 @@ const int PPR = 200;
 
 volatile long countR = 0; volatile long countL = 0;
 volatile unsigned long lastTimeR = 0; volatile unsigned long lastTimeL = 0;
-const unsigned long DEBOUNCE_US = 3000;
+const unsigned long DEBOUNCE_US = 1500;
 
 // ============================================================
 // PID
 // ============================================================
 float KpR = 0.3; float KiR = 1.2; float KdR = -0.1;
-float KpL = 0.3; float KiL = 1.2; float KdL = -0.1;
+float KpL = 0.5; float KiL = 3.0; float KdL = -0.05;
 
 float integralR = 0; float integralL = 0;
 float prev_wRe = 0; float prev_wLe = 0;
 const float integralMax = 80;     // Reducido para evitar que el robot "patine"
 const float DIST_TOLERANCE = 1.5; // Detenerse a 2.5cm
-const float DECEL_DIST = 25.0;    // Empezar a frenar a los 25cm
+const float DECEL_DIST = 10.0;    // Empezar a frenar a los 25cm
 // ============================================================
 // INTERRUPCIONES
 // ============================================================
@@ -114,7 +119,8 @@ void IRAM_ATTR isrL() {
 // ============================================================
 void motorR(bool adelante, int pwm) {
     dirR = adelante ? 1 : -1;
-    int pwmFinal = (pwm > 0) ? constrain(pwm + offsetR, 0, 255) : 0;
+    int offsetEfectivo = adelante ? offsetR : offsetR + 20;
+    int pwmFinal = (pwm > 0) ? constrain(pwm + offsetEfectivo, 0, 255) : 0;
     digitalWrite(IN1, adelante ? LOW : HIGH);
     digitalWrite(IN2, adelante ? HIGH : LOW);
     ledcWrite(canalR, pwmFinal);
@@ -122,7 +128,8 @@ void motorR(bool adelante, int pwm) {
 
 void motorL(bool adelante, int pwm) {
     dirL = adelante ? 1 : -1;
-    int pwmFinal = (pwm > 0) ? constrain(pwm + offsetL, 0, 255) : 0;
+    int offsetEfectivo = adelante ? offsetL : offsetL + 20; // más empuje en reversa
+    int pwmFinal = (pwm > 0) ? constrain(pwm + offsetEfectivo, 0, 255) : 0;
     digitalWrite(IN3, adelante ? LOW : HIGH);
     digitalWrite(IN4, adelante ? HIGH : LOW);
     ledcWrite(canalL, pwmFinal);
@@ -206,6 +213,21 @@ void tareaBT(void *pvParameters) {
 
                 sistemaActivo = false;
 
+                motorR(true, 0);
+                motorL(true, 0);
+            }
+
+            else if (cmd == "RESET") {
+                x_pos = 0;
+                y_pos = 0;
+                theta = PI / 2.0;
+                integralR = 0;
+                integralL = 0;
+                prev_wRe = 0;
+                prev_wLe = 0;
+                wRref = 0;
+                wLref = 0;
+                sistemaActivo = false;
                 motorR(true, 0);
                 motorL(true, 0);
             }
@@ -337,25 +359,24 @@ void tareaBT(void *pvParameters) {
                 "\"y\":%.2f,"
                 "\"theta\":%.2f,"
                 "\"wr\":%.2f,"
+                "\"wl\":%.2f,"
                 "\"wrref\":%.2f,"
+                "\"wgyro\":%.3f,"
+                "\"wlref\":%.2f,"
+                "\"dist\":%.2f,"
+                "\"errtheta\":%.2f,"
                 "\"kv\":%.2f,"
                 "\"kw\":%.2f,"
                 "\"vm\":%.2f,"
                 "\"wm\":%.2f,"
                 "\"tx\":%.2f,"
                 "\"ty\":%.2f}\n",
-
-                x_pos,
-                y_pos,
-                theta,
-                env_wR,
-                env_wRref,
-                Kv,
-                Kw,
-                V_MAX,
-                W_MAX,
-                targetX,
-                targetY
+                x_pos, y_pos, theta,
+                env_wR, env_wL,
+                env_wRref, env_wGyro, env_wLref,
+                env_dist, env_errTheta,
+                Kv, Kw, V_MAX, W_MAX,
+                targetX, targetY
             );
         }
 
@@ -385,11 +406,12 @@ void setup() {
         mpu.getEvent(&a, &g, &temp);
         
         // 🔴 EJE CORREGIDO PARA CALIBRACIÓN
-        suma += g.gyro.z; 
+        suma += g.gyro.x; 
         
         delay(3);
     }
     gyro_offset = suma / 500.0;
+    Serial.printf("Gyro offset calculado: %.4f\n", gyro_offset);
     
     pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
     pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
@@ -448,26 +470,23 @@ void loop() {
         // LECTURA DEL MPU (EJE X CORREGIDO)
         // ====================================================
         sensors_event_t a, g, temp;
-        mpu.getEvent(&a, &g, &temp);
-
-        // 🔴 EJE CORREGIDO (Izquierda = Positivo)
-        float w_gyro = g.gyro.z - gyro_offset;
-        // float w_gyro = 0;
-        // Banda Muerta (Deadband)
-        if (abs(w_gyro) < 0.03) {
-            w_gyro = 0.0;
+        float w_gyro = 0.0;
+        if (mpu.getEvent(&a, &g, &temp)) {
+            float raw = g.gyro.x - gyro_offset;
+            if (abs(raw) < 0.05) raw = 0.0;
+            w_gyro = raw;
         }
-
-        theta += w_gyro * dt;
+        env_wGyro = w_gyro;
+        float w_odom = (wR - wL) * R / L;
+        float w_fusion = 0.7 * w_odom + 0.3 * w_gyro;
+        theta += w_fusion * dt;
 
         // ====================================================
-        // ODOMETRÍA LINEAL (ENCODERS)
+        // POSICIÓN
         // ====================================================
         float v_actual = (wR + wL) * R / 2.0;
-
         x_pos += v_actual * cos(theta) * dt;
         y_pos += v_actual * sin(theta) * dt;
-
         // ====================================================
         // NAVEGACIÓN GO-TO-GOAL
         // ====================================================
@@ -477,36 +496,34 @@ void loop() {
         
         float angleToTarget = atan2(dy, dx);
         float errorTheta = angleToTarget - theta;
-
         while (errorTheta > PI) errorTheta -= 2 * PI;
         while (errorTheta < -PI) errorTheta += 2 * PI;
-
+        
         float v_deseada = 0;
         float w_deseada = 0;
-
+        
         if (dist > DIST_TOLERANCE) {
-            // Prioridad de corrección estricta: si el ángulo es muy grande, gira sobre su eje
-            if (abs(errorTheta) > 0.4) {
-                v_deseada = 0; 
-                w_deseada = Kw * errorTheta;
-            } else {
-                // FRENADO PROPORCIONAL: reduce velocidad al acercarse a la meta
-                float v_frenado = (dist < DECEL_DIST) ? (Kv * dist) : V_MAX;
-                v_deseada = constrain(v_frenado, 0.8, V_MAX); // 1.2 es el mínimo para no quedarse trabado
-                w_deseada = Kw * errorTheta;
+            // Siempre avanza, solo ajusta w según el error angular
+            float v_frenado = (dist < DECEL_DIST) ? (Kv * dist) : V_MAX;
+            v_deseada = constrain(v_frenado, 0.0, V_MAX);
+            w_deseada = Kw * errorTheta;
+
+            // Solo gira en sitio si el error es MUY grande (casi 90°)
+            if (abs(errorTheta) > 2.5) {
+                v_deseada = 0;
             }
 
             v_deseada = constrain(v_deseada, 0, V_MAX);
             w_deseada = constrain(w_deseada, -W_MAX, W_MAX);
-        } else {
-            // LLEGADA A META: Apagado total y limpieza de integrales
+        }else {
+            // META ALCANZADA — parar incondicionalmente
             sistemaActivo = false;
             v_deseada = 0; w_deseada = 0;
             wRref = 0; wLref = 0;
-            integralR = 0; integralL = 0;
-            prev_wRe = 0; prev_wLe = 0;
+            integralR = 0; integralL = 0;       // ← agregar esto
+            prev_wRe = 0; prev_wLe = 0;         // ← y esto
             motorR(true, 0); motorL(true, 0);
-            // SerialBT.println(">> META ALCANZADA");
+            Serial.println(">> META ALCANZADA");
         }
 
         // Cinemática Inversa
@@ -532,16 +549,49 @@ void loop() {
         salR_prev = salR;
         salL_prev = salL;
 
-        motorR(salR >= 0, constrain(abs((int)salR), 0, 255));
-        motorL(salL >= 0, constrain(abs((int)salL), 0, 255));
+        // ← AQUÍ va el bloque nuevo, reemplazando las dos líneas viejas
+        static int ciclosSinMovL = 0;
+        ciclosSinMovL = (abs(wLref) > 0.1 && abs(wL) < 0.05) ? ciclosSinMovL + 1 : 0;
+        int kickL = (ciclosSinMovL > 2) ? 40 : 0;
 
-        env_wRref = wRref; env_wR = wR;
+        motorR(salR >= 0, constrain(abs((int)salR), 0, 255));
+        motorL(salL >= 0, constrain(abs((int)salL) + kickL, 0, 255));
+
+        env_wR = wR;
+        env_wL = wL;           // ← nuevo
+        env_wRref = wRref;
+        env_wLref = wLref;     // ← nuevo
+        env_dist = dist;       // ← nuevo
+        env_errTheta = errorTheta; // ← nuevo
         env_x = x_pos; env_y = y_pos;
         hayNuevosDatos = true;
 
         lastCountR = r; lastCountL = l;
         lastTime = now;
         prev_wRe = wRe; prev_wLe = wLe;
+
+        Serial.printf(
+        "dist=%.2f "
+        "theta=%.2f "
+        "targetAng=%.2f "
+        "errTheta=%.2f "
+        "v=%.2f "
+        "w=%.2f "
+        "wR=%.2f "
+        "wL=%.2f "
+        "wRref=%.2f "
+        "wLref=%.2f\n",
+        dist,
+        theta,
+        angleToTarget,
+        errorTheta,
+        v_deseada,
+        w_deseada,
+        wR,
+        wL,
+        wRref,
+        wLref
+        );
     }
     delay(10);
 }
