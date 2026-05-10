@@ -176,7 +176,7 @@ slider_kv = tk.Scale(
     orient=tk.HORIZONTAL,
     command=actualizar_kv
 )
-slider_kv.set(0.3)
+slider_kv.set(0.6)
 slider_kv.pack(fill="x")
 
 # Kw
